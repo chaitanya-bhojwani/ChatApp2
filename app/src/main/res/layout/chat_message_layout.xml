@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<android.support.constraint.ConstraintLayout
+<LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/messageParentLayout"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:paddingTop="8dp"
     android:paddingLeft="5dp">
 
     <TextView
-        android:id="@+id/text_message_body"
-        android:text="hi man, how are you? lets see how well you can roll down the hill"
+        android:id="@+id/chatMessage"
+        android:text="hi man, how are you? lets see how well you can roll down the hill."
         android:background="@drawable/their_message"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -21,13 +22,14 @@
         android:layout_marginLeft="8dp" />
 
     <TextView
-        android:id="@+id/text_message_time"
-        android:text="11:40"
+        android:id="@+id/sentTime"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:textSize="10sp"
-        app:layout_constraintLeft_toRightOf="@+id/text_message_body"
         android:layout_marginLeft="4dp"
-        app:layout_constraintBottom_toBottomOf="@+id/text_message_body" />
+        android:text="11:40"
+        android:textSize="10sp"
+        android:layout_gravity="bottom"
+        app:layout_constraintBottom_toBottomOf="@+id/chatMessage"
+        app:layout_constraintLeft_toRightOf="@+id/chatMessage" />
 
-</android.support.constraint.ConstraintLayout>
+</LinearLayout>

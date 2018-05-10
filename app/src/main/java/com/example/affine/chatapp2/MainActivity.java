@@ -1,265 +1,301 @@
 package com.example.affine.chatapp2;
 
-import android.app.Activity;
-import android.database.Cursor;
-import android.database.MatrixCursor;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.net.Uri;
-import android.os.AsyncTask;
-import android.provider.ContactsContract;
-import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
-import android.view.Menu;
-import android.widget.ListView;
-import android.widget.SimpleCursorAdapter;
+import android.os.Handler;
+import android.support.design.widget.FloatingActionButton;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.LinearLayoutManager;
+import android.support.v7.widget.RecyclerView;
+import android.text.Editable;
+import android.text.TextUtils;
+import android.text.TextWatcher;
+import android.util.Log;
+import android.view.View;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.TextView;
 
-import java.io.File;
-import java.io.FileOutputStream;
+import com.google.gson.Gson;
 
-public class MainActivity extends Activity {
+import org.eclipse.paho.android.service.MqttAndroidClient;
 
-    SimpleCursorAdapter mAdapter;
-    MatrixCursor mMatrixCursor;
+import java.util.List;
+
+import io.reactivex.SingleObserver;
+import io.reactivex.disposables.Disposable;
+
+public class MainActivity extends AppCompatActivity implements MqttBrokerManager.MqttBrokerCallback {
+    RecyclerView messageList;
+    MessageListAdapter messageListAdapter;
+    MqttBrokerManager mqttBrokerManager;
+    List<DataModel> msgList = Lists.newArrayList();
+    EditText chatbox;
+    ImageView onlineStatus;
+    TextView isTypingStatus;
+    FloatingActionButton sendButton;
+    Gson gson;
+    PreferenceManager preferenceManager;
+    String channelId;
+    String onlinechannelId;
+    String istypingchannelId;
+    String listenonlinechannelId;
+    String listenistypingchannelId;
+    DataManager dataManager;
+    Handler isTypingHandler = new Handler();
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // The contacts from the contacts content provider is stored in this
-        // cursor
-        mMatrixCursor = new MatrixCursor(new String[] { "_id", "name", "photo",
-                "details" });
+        Bundle extras = getIntent().getBundleExtra("data");
+        final UserInfo userInfo = (UserInfo) extras.getSerializable("user");
+        Log.i("userinfo ", userInfo.getName() + userInfo.getId());
+        gson = new Gson();
+        dataManager = new DataManager(new ApiService.Factory().createService());
+        preferenceManager = new PreferenceManager(this);
+        final int id = preferenceManager.getId();
+        String name = preferenceManager.getName();
 
-        // Adapter to set data in the listview
-        mAdapter = new SimpleCursorAdapter(getBaseContext(),
-                R.layout.lv_layout, null, new String[] { "name", "photo",
-                "details" }, new int[] { R.id.tv_name, R.id.iv_photo,
-                R.id.tv_details }, 0);
+        chatbox = findViewById(R.id.chatMessage);
+        sendButton = findViewById(R.id.chatSubmit);
+        messageList = findViewById(R.id.chatList);
+        onlineStatus = findViewById(R.id.onlineStatus);
+        isTypingStatus = findViewById(R.id.isTyping);
+        LinearLayoutManager linearLayoutManager = new LinearLayoutManager(this);
+        linearLayoutManager.setStackFromEnd(true);
 
-        // Getting reference to listview
-        ListView lstContacts = (ListView) findViewById(R.id.lst_contacts);
+        messageList.setLayoutManager(linearLayoutManager);
+        messageListAdapter = new MessageListAdapter();
+        messageListAdapter.setUserId(id);
+        messageList.setAdapter(messageListAdapter);
+        mqttBrokerManager = new MqttBrokerManager(this, this);
+        mqttBrokerManager.connect();
 
-        // Setting the adapter to listview
-        lstContacts.setAdapter(mAdapter);
+        channelId = createChannelId(id, userInfo.getId());
+        istypingchannelId = createistypingchannelId(id, userInfo.getId());
+        listenonlinechannelId = createlistenonlinechannelId(userInfo.getId());
+        listenistypingchannelId = createlistenistypingchannelId(id, userInfo.getId());
+        getSupportActionBar().setTitle(userInfo.getName());
 
-        // Creating an AsyncTask object to retrieve and load listview with
-        // contacts
-        ListViewContactsLoader listViewContactsLoader = new ListViewContactsLoader();
+        dataManager.getHistory(channelId).subscribeWith(new HistoryObserver());
+        sendButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String message = chatbox.getText().toString();
+                DataModel dataModel = new DataModel();
+                dataModel.setMesgType("message");
+                dataModel.setMessage(message);
+                dataModel.setMsgId(System.currentTimeMillis());
+                dataModel.setUserId(id);
+                mqttBrokerManager.publish(channelId, gson.toJson(dataModel));
+                chatbox.getText().clear();
+            }
+        });
 
-        // Starting the AsyncTask process to retrieve and load listview with
-        // contacts
-        listViewContactsLoader.execute();
+        chatbox.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (!TextUtils.isEmpty(s)) {
+                    //send message of istyping
+                    final int id2 = preferenceManager.getId();
+                    DataModel dataModel2 = new DataModel();
+                    dataModel2.setMesgType("istypingStatus");
+                    dataModel2.setMessage("istyping");
+                    dataModel2.setMsgId(System.currentTimeMillis());
+                    dataModel2.setUserId(id2);
+                    mqttBrokerManager.publish(istypingchannelId, gson.toJson(dataModel2));
+                    if (updateisTypingStatus != null) {
+                        isTypingHandler.removeCallbacks(updateisTypingStatus);
+                        isTypingHandler.postDelayed(updateisTypingStatus, 2000);
+                    }
+                }
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+
+            }
+        });
+
+        android.os.Handler customHandler = new android.os.Handler();
+        customHandler.postDelayed(updateTimeThread, 1000);
 
     }
 
-    /** An AsyncTask class to retrieve and load listview with contacts */
-    private class ListViewContactsLoader extends AsyncTask<Void, Void, Cursor> {
+    private Runnable updateTimeThread = new Runnable() {
+        android.os.Handler customHandler = new android.os.Handler();
 
         @Override
-        protected Cursor doInBackground(Void... params) {
-            Uri contactsUri = ContactsContract.Contacts.CONTENT_URI;
-
-            // Querying the table ContactsContract.Contacts to retrieve all the
-            // contacts
-            Cursor contactsCursor = getContentResolver().query(contactsUri,
-                    null, null, null,
-                    ContactsContract.Contacts.DISPLAY_NAME + " ASC ");
-
-            if (contactsCursor.moveToFirst()) {
-                do {
-                    long contactId = contactsCursor.getLong(contactsCursor
-                            .getColumnIndex("_ID"));
-
-                    Uri dataUri = ContactsContract.Data.CONTENT_URI;
-
-                    // Querying the table ContactsContract.Data to retrieve
-                    // individual items like
-                    // home phone, mobile phone, work email etc corresponding to
-                    // each contact
-                    Cursor dataCursor = getContentResolver().query(dataUri,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + "=" + contactId,
-                            null, null);
-
-                    String displayName = "";
-                    String nickName = "";
-                    String homePhone = "";
-                    String mobilePhone = "";
-                    String workPhone = "";
-                    String photoPath = "" + R.drawable.ic_launcher_background;
-                    byte[] photoByte = null;
-                    String homeEmail = "";
-                    String workEmail = "";
-                    String companyName = "";
-                    String title = "";
-
-                    if (dataCursor.moveToFirst()) {
-                        // Getting Display Name
-                        displayName = dataCursor
-                                .getString(dataCursor
-                                        .getColumnIndex(ContactsContract.Data.DISPLAY_NAME));
-                        do {
-
-                            // Getting NickName
-                            if (dataCursor
-                                    .getString(
-                                            dataCursor
-                                                    .getColumnIndex("mimetype"))
-                                    .equals(ContactsContract.CommonDataKinds.Nickname.CONTENT_ITEM_TYPE))
-                                nickName = dataCursor.getString(dataCursor
-                                        .getColumnIndex("data1"));
-
-                            // Getting Phone numbers
-                            if (dataCursor
-                                    .getString(
-                                            dataCursor
-                                                    .getColumnIndex("mimetype"))
-                                    .equals(ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)) {
-                                switch (dataCursor.getInt(dataCursor
-                                        .getColumnIndex("data2"))) {
-                                    case ContactsContract.CommonDataKinds.Phone.TYPE_HOME:
-                                        homePhone = dataCursor.getString(dataCursor
-                                                .getColumnIndex("data1"));
-                                        break;
-                                    case ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE:
-                                        mobilePhone = dataCursor
-                                                .getString(dataCursor
-                                                        .getColumnIndex("data1"));
-                                        break;
-                                    case ContactsContract.CommonDataKinds.Phone.TYPE_WORK:
-                                        workPhone = dataCursor.getString(dataCursor
-                                                .getColumnIndex("data1"));
-                                        break;
-                                }
-                            }
-
-                            // Getting EMails
-                            if (dataCursor
-                                    .getString(
-                                            dataCursor
-                                                    .getColumnIndex("mimetype"))
-                                    .equals(ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)) {
-                                switch (dataCursor.getInt(dataCursor
-                                        .getColumnIndex("data2"))) {
-                                    case ContactsContract.CommonDataKinds.Email.TYPE_HOME:
-                                        homeEmail = dataCursor.getString(dataCursor
-                                                .getColumnIndex("data1"));
-                                        break;
-                                    case ContactsContract.CommonDataKinds.Email.TYPE_WORK:
-                                        workEmail = dataCursor.getString(dataCursor
-                                                .getColumnIndex("data1"));
-                                        break;
-                                }
-                            }
-
-                            // Getting Organization details
-                            if (dataCursor
-                                    .getString(
-                                            dataCursor
-                                                    .getColumnIndex("mimetype"))
-                                    .equals(ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)) {
-                                companyName = dataCursor.getString(dataCursor
-                                        .getColumnIndex("data1"));
-                                title = dataCursor.getString(dataCursor
-                                        .getColumnIndex("data4"));
-                            }
-
-                            // Getting Photo
-                            if (dataCursor
-                                    .getString(
-                                            dataCursor
-                                                    .getColumnIndex("mimetype"))
-                                    .equals(ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE)) {
-                                photoByte = dataCursor.getBlob(dataCursor
-                                        .getColumnIndex("data15"));
-
-                                if (photoByte != null) {
-                                    Bitmap bitmap = BitmapFactory
-                                            .decodeByteArray(photoByte, 0,
-                                                    photoByte.length);
-
-                                    // Getting Caching directory
-                                    File cacheDirectory = getBaseContext()
-                                            .getCacheDir();
-
-                                    // Temporary file to store the contact image
-                                    File tmpFile = new File(
-                                            cacheDirectory.getPath() + "/wpta_"
-                                                    + contactId + ".png");
-
-                                    // The FileOutputStream to the temporary
-                                    // file
-                                    try {
-                                        FileOutputStream fOutStream = new FileOutputStream(
-                                                tmpFile);
-
-                                        // Writing the bitmap to the temporary
-                                        // file as png file
-                                        bitmap.compress(
-                                                Bitmap.CompressFormat.PNG, 100,
-                                                fOutStream);
-
-                                        // Flush the FileOutputStream
-                                        fOutStream.flush();
-
-                                        // Close the FileOutputStream
-                                        fOutStream.close();
-
-                                    } catch (Exception e) {
-                                        e.printStackTrace();
-                                    }
-
-                                    photoPath = tmpFile.getPath();
-                                }
-
-                            }
-
-                        } while (dataCursor.moveToNext());
-
-                        String details = "";
-
-                        // Concatenating various information to single string
-                        if (homePhone != null && !homePhone.equals(""))
-                            details = "HomePhone : " + homePhone + "\n";
-                        if (mobilePhone != null && !mobilePhone.equals(""))
-                            details += "MobilePhone : " + mobilePhone + "\n";
-                        if (workPhone != null && !workPhone.equals(""))
-                            details += "WorkPhone : " + workPhone + "\n";
-                        if (nickName != null && !nickName.equals(""))
-                            details += "NickName : " + nickName + "\n";
-                        if (homeEmail != null && !homeEmail.equals(""))
-                            details += "HomeEmail : " + homeEmail + "\n";
-                        if (workEmail != null && !workEmail.equals(""))
-                            details += "WorkEmail : " + workEmail + "\n";
-                        if (companyName != null && !companyName.equals(""))
-                            details += "CompanyName : " + companyName + "\n";
-                        if (title != null && !title.equals(""))
-                            details += "Title : " + title + "\n";
-
-                        // Adding id, display name, path to photo and other
-                        // details to cursor
-                        mMatrixCursor.addRow(new Object[] {
-                                Long.toString(contactId), displayName,
-                                photoPath, details });
-                    }
-
-                } while (contactsCursor.moveToNext());
-            }
-            return mMatrixCursor;
+        public void run() {
+            postOnlineStatus();
+            customHandler.postDelayed(this, 3000);
         }
+    };
+
+    private Runnable updateisTypingStatus = new Runnable() {
 
         @Override
-        protected void onPostExecute(Cursor result) {
-            // Setting the cursor containing contacts to listview
-            mAdapter.swapCursor(result);
+        public void run() {
+            postisTypingStatus();
+        }
+    };
+
+    public void postisTypingStatus() {
+        final int id2 = preferenceManager.getId();
+        DataModel dataModel2 = new DataModel();
+        dataModel2.setMesgType("istypingStatus");
+        dataModel2.setMessage("isnottyping");
+        dataModel2.setMsgId(System.currentTimeMillis());
+        dataModel2.setUserId(id2);
+        mqttBrokerManager.publish(istypingchannelId, gson.toJson(dataModel2));
+    }
+
+    public void postOnlineStatus() {
+        final int id1 = preferenceManager.getId();
+        onlinechannelId = createonlineChannelId(id1);
+        DataModel dataModel1 = new DataModel();
+        dataModel1.setMesgType("onlineStatus");
+        dataModel1.setMessage("online");
+        dataModel1.setMsgId(System.currentTimeMillis());
+        dataModel1.setUserId(id1);
+        mqttBrokerManager.publish(onlinechannelId, gson.toJson(dataModel1));
+
+    }
+
+    @Override
+    public void onConnectionEstablished(MqttAndroidClient MqttAndroidClient) {
+        Log.i("main", "connected " + channelId);
+        mqttBrokerManager.receiveMessages();
+        mqttBrokerManager.subscribe(channelId);
+        mqttBrokerManager.subscribe(listenonlinechannelId);
+        mqttBrokerManager.subscribe(listenistypingchannelId);
+    }
+
+    @Override
+    public void onDisconnected() {
+        Log.i("main", "disconnected");
+
+    }
+
+    @Override
+    public void onSubscription() {
+        Log.i("main", "subscription");
+
+    }
+
+    @Override
+    public void onUnSubscription() {
+        Log.i("main", "unsubscribe");
+
+    }
+
+    @Override
+    public void onMessageReceived(String topic, String message) {
+        Log.i("main", "message " + topic + " " + message);
+        DataModel dataModel = gson.fromJson(message, DataModel.class);
+        if (Strings.areEqual(dataModel.getMesgType(), "message")) {
+            msgList.add(dataModel);
+            messageListAdapter.setmDataset(msgList);
+            messageList.scrollToPosition(msgList.size() - 1);
+        }
+        if (Strings.areEqual(dataModel.getMesgType(), "onlineStatus")) {
+            if (Strings.areEqual(dataModel.getMessage(), "online")) {
+                onlineStatus.setBackgroundResource(R.drawable.onlineindicator);
+            }
+            if (Strings.areEqual(dataModel.getMessage(), "offline")) {
+                onlineStatus.setBackgroundResource(R.drawable.circle);
+            }
+        }
+        if (Strings.areEqual(dataModel.getMesgType(), "istypingStatus")) {
+            if (Strings.areEqual(dataModel.getMessage(), "istyping")) {
+                isTypingStatus.setVisibility(TextView.VISIBLE);
+            } else {
+                isTypingStatus.setVisibility(TextView.INVISIBLE);
+            }
         }
     }
 
     @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.activity_main, menu);
-        return true;
+    public void onConnectionLost() {
+        Log.i("main", "connectedlost");
+
+    }
+
+    @Override
+    public void onError(String section, String error) {
+        Log.i("main", "error");
+
+    }
+
+
+    private String createChannelId(int n1, int n2) {
+        if (n1 > n2) {
+            return "PQ/" + n2 + "" + n1;
+        }
+        return "PQ/" + n1 + "" + n2;
+    }
+
+    private String createistypingchannelId(int n1, int n2) {
+        if (n1 > n2) {
+            return "PQ/" + n2 + "" + n1 + "istyping" + n1;
+        }
+        return "PQ/" + n1 + "" + n2 + "istyping" + n1;
+    }
+
+    private String createlistenistypingchannelId(int n1, int n2) {
+        if (n1 > n2) {
+            return "PQ/" + n2 + "" + n1 + "istyping" + n2;
+        }
+        return "PQ/" + n1 + "" + n2 + "istyping" + n2;
+    }
+
+    private String createlistenonlinechannelId(int n1) {
+        return "PQ/" + n1 + "onlinestatus";
+    }
+
+    private String createonlineChannelId(int n1) {
+        return "PQ/" + n1 + "onlinestatus";
+    }
+
+
+    class HistoryObserver implements SingleObserver<Response<List<HistoryResponseItem>>> {
+
+        @Override
+        public void onSubscribe(Disposable d) {
+
+        }
+
+        @Override
+        public void onSuccess(Response<List<HistoryResponseItem>> listResponse) {
+            List<HistoryResponseItem> data = listResponse.getData();
+            for (HistoryResponseItem item : data) {
+                String json = item.getMessage();
+//                Log.i("data ", json);
+                try {
+                    DataModel dataModel = gson.fromJson(json, DataModel.class);
+//                Log.i("data ", dataModel.getMesgType());
+//                Log.i("data ", dataModel.getMessage());
+//                Log.i("data ", "" + dataModel.getUserId());
+                    msgList.add(dataModel);
+//                    Collections.reverse(msgList);
+                } catch (Throwable throwable) {
+
+                }
+            }
+            messageListAdapter.setmDataset(msgList);
+            messageList.scrollToPosition(msgList.size() - 1);
+        }
+
+        @Override
+        public void onError(Throwable e) {
+
+        }
     }
 }
+
